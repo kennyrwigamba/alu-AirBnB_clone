@@ -104,6 +104,64 @@ class TestBaseModel(unittest.TestCase):
         self.assertIsNot(model_dict, model.__dict__)
         self.assertEqual(model.name, "Original name")
 
+    def test_create_from_dictionary(self):
+        """Restoring a dictionary preserves all original model attributes."""
+        model = BaseModel()
+        model.name = "My First Model"
+        model.my_number = 89
+        restored_model = BaseModel(**model.to_dict())
+        self.assertIsNot(restored_model, model)
+        self.assertEqual(restored_model.__dict__, model.__dict__)
+        self.assertEqual(restored_model.to_dict(), model.to_dict())
+
+    def test_dictionary_class_name_is_ignored(self):
+        """Serialized class metadata is not added as an instance attribute."""
+        model_dict = BaseModel().to_dict()
+        model_dict["__class__"] = "AnotherClass"
+        restored_model = BaseModel(**model_dict)
+        self.assertNotIn("__class__", restored_model.__dict__)
+        self.assertEqual(restored_model.to_dict()["__class__"], "BaseModel")
+
+    def test_dictionary_timestamps_become_datetimes(self):
+        """ISO strings are restored as datetime objects with microseconds."""
+        model_dict = {
+            "id": "saved-id",
+            "created_at": "2026-01-02T03:04:05.123456",
+            "updated_at": "2026-01-02T06:07:08.654321",
+        }
+        model = BaseModel(**model_dict)
+        self.assertEqual(model.id, "saved-id")
+        self.assertEqual(
+            model.created_at, datetime(2026, 1, 2, 3, 4, 5, 123456))
+        self.assertEqual(
+            model.updated_at, datetime(2026, 1, 2, 6, 7, 8, 654321))
+        self.assertEqual(
+            model.to_dict()["created_at"], model_dict["created_at"])
+
+    def test_dictionary_timestamps_without_microseconds(self):
+        """ISO strings with zero microseconds can also be restored."""
+        model = BaseModel(
+            created_at="2026-01-02T03:04:05",
+            updated_at="2026-01-02T06:07:08")
+        self.assertEqual(model.created_at, datetime(2026, 1, 2, 3, 4, 5))
+        self.assertEqual(model.updated_at, datetime(2026, 1, 2, 6, 7, 8))
+
+    def test_empty_dictionary_creates_new_model(self):
+        """An empty dictionary follows normal new-instance initialization."""
+        model = BaseModel(**{})
+        self.assertEqual(uuid.UUID(model.id).version, 4)
+        self.assertIsInstance(model.created_at, datetime)
+        self.assertIsInstance(model.updated_at, datetime)
+
+    def test_positional_arguments_are_ignored(self):
+        """Positional arguments do not affect new or restored models."""
+        model = BaseModel("ignored", 89)
+        self.assertEqual(uuid.UUID(model.id).version, 4)
+        model_dict = model.to_dict()
+        restored_model = BaseModel("ignored", 89, **model_dict)
+        self.assertEqual(restored_model.__dict__, model.__dict__)
+        self.assertEqual(model_dict, model.to_dict())
+
 
 if __name__ == "__main__":
     unittest.main()

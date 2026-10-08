@@ -8,11 +8,19 @@ import uuid
 class BaseModel:
     """Represent a model with a unique ID and creation/update timestamps."""
 
-    def __init__(self):
-        """Create a new model with a unique ID and current timestamps."""
-        self.id = str(uuid.uuid4())
-        self.created_at = datetime.now()
-        self.updated_at = datetime.now()
+    def __init__(self, *args, **kwargs):
+        """Create a new model or restore attributes from a dictionary."""
+        if kwargs:
+            for key, value in kwargs.items():
+                if key == "__class__":
+                    continue
+                if key in ("created_at", "updated_at"):
+                    value = datetime.fromisoformat(value)
+                setattr(self, key, value)
+        else:
+            self.id = str(uuid.uuid4())
+            self.created_at = datetime.now()
+            self.updated_at = datetime.now()
 
     def __str__(self):
         """Return the model's class name, ID, and instance attributes."""

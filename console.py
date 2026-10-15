@@ -31,6 +31,7 @@ class HBNBCommand(cmd.Cmd):
 
     def emptyline(self):
         """Do nothing when the user enters an empty line."""
+        pass
 
     def _arguments(self, line):
         """Split a command line while preserving quoted values."""
@@ -155,5 +156,5 @@ class HBNBCommand(cmd.Cmd):
         instance.save()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     HBNBCommand().cmdloop()

@@ -1,167 +1,151 @@
 #!/usr/bin/python3
-"""Test the shared attributes and methods of BaseModel."""
+"""Validate identity, timestamps, serialization, and model persistence."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
+from pathlib import Path
+import tempfile
 import unittest
-import uuid
+from unittest.mock import patch
+from uuid import UUID
 
+from models import storage
 from models.base_model import BaseModel
+from models.engine.file_storage import FileStorage
 
 
 class TestBaseModel(unittest.TestCase):
-    """Check model creation, display, saving, and dictionary conversion."""
+    """Exercise common behavior for BaseModel and each derived model."""
 
-    def test_id_is_uuid_string(self):
-        """A new model receives a valid UUID version 4 as a string."""
-        model = BaseModel()
-        self.assertIsInstance(model.id, str)
-        self.assertEqual(uuid.UUID(model.id).version, 4)
-        self.assertEqual(str(uuid.UUID(model.id)), model.id)
+    model_class = BaseModel
+    defaults = {}
 
-    def test_ids_are_unique(self):
-        """Separate model instances receive different identifiers."""
-        first_model = BaseModel()
-        second_model = BaseModel()
-        self.assertNotEqual(first_model.id, second_model.id)
+    def setUp(self):
+        """Isolate each test from real storage objects and files."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "file.json"
+        objects = patch.object(FileStorage, "_FileStorage__objects", {})
+        file_path = patch.object(
+            FileStorage, "_FileStorage__file_path", str(self.path)
+        )
+        objects.start()
+        self.addCleanup(objects.stop)
+        file_path.start()
+        self.addCleanup(file_path.stop)
 
-    def test_timestamps_are_current_datetimes(self):
-        """Creation assigns both timestamps within the creation interval."""
+    def test_identity(self):
+        """New instances have distinct string UUIDs of version four."""
+        first, second = self.model_class(), self.model_class()
+        self.assertIsInstance(first.id, str)
+        self.assertEqual(UUID(first.id).version, 4)
+        self.assertNotEqual(first.id, second.id)
+
+    def test_timestamps(self):
+        """New timestamps are datetime values within construction time."""
         before = datetime.now()
-        model = BaseModel()
+        model = self.model_class()
         after = datetime.now()
-        self.assertIsInstance(model.created_at, datetime)
-        self.assertIsInstance(model.updated_at, datetime)
-        self.assertLessEqual(before, model.created_at)
-        self.assertLessEqual(model.created_at, model.updated_at)
-        self.assertLessEqual(model.updated_at, after)
+        for value in (model.created_at, model.updated_at):
+            self.assertIsInstance(value, datetime)
+            self.assertLessEqual(before, value)
+            self.assertLessEqual(value, after)
 
-    def test_string_representation(self):
-        """The displayed model includes its class, ID, and attributes."""
-        model = BaseModel()
-        model.name = "My First Model"
-        expected = "[BaseModel] ({}) {}".format(model.id, model.__dict__)
+    def test_registration(self):
+        """Construction immediately registers the new model in storage."""
+        model = self.model_class()
+        key = "{}.{}".format(self.model_class.__name__, model.id)
+        self.assertIs(storage.all()[key], model)
+
+    def test_args_ignored(self):
+        """Positional arguments do not become model attributes."""
+        model = self.model_class("ignored", 42)
+        self.assertNotEqual(model.id, "ignored")
+        self.assertIsInstance(model.created_at, datetime)
+
+    def test_string(self):
+        """String output includes the exact class, ID, and attributes."""
+        model = self.model_class()
+        expected = "[{}] ({}) {}".format(
+            self.model_class.__name__, model.id, model.__dict__
+        )
         self.assertEqual(str(model), expected)
 
-    def test_save_updates_only_updated_at(self):
-        """Saving refreshes updated_at and preserves other attributes."""
-        model = BaseModel()
-        model.name = "My First Model"
-        model.updated_at = datetime(2000, 1, 1)
-        original_attributes = model.__dict__.copy()
-        before = datetime.now()
-        model.save()
-        after = datetime.now()
-        self.assertLessEqual(before, model.updated_at)
-        self.assertLessEqual(model.updated_at, after)
-        self.assertNotEqual(
-            model.updated_at, original_attributes["updated_at"])
-        for attribute in original_attributes:
-            if attribute != "updated_at":
-                self.assertEqual(
-                    getattr(model, attribute), original_attributes[attribute])
+    def test_dictionary(self):
+        """Serialization includes custom data and ISO-format timestamps."""
+        model = self.model_class()
+        model.custom_number = 89
+        data = model.to_dict()
+        expected = model.__dict__.copy()
+        expected.update({
+            "__class__": self.model_class.__name__,
+            "created_at": model.created_at.isoformat(),
+            "updated_at": model.updated_at.isoformat(),
+        })
+        self.assertEqual(data, expected)
+        self.assertEqual(json.loads(json.dumps(data)), data)
 
-    def test_to_dict_includes_instance_attributes_and_class(self):
-        """The dictionary includes custom attributes and the class name."""
-        model = BaseModel()
-        model.name = "My First Model"
-        model.my_number = 89
-        model_dict = model.to_dict()
-        self.assertIsInstance(model_dict, dict)
-        self.assertEqual(model_dict["id"], model.id)
-        self.assertEqual(model_dict["name"], "My First Model")
-        self.assertEqual(model_dict["my_number"], 89)
-        self.assertEqual(model_dict["__class__"], "BaseModel")
-        self.assertEqual(
-            set(model_dict), set(model.__dict__) | {"__class__"})
-
-    def test_to_dict_converts_timestamps_to_iso_strings(self):
-        """Both timestamps are serialized using ISO datetime formatting."""
-        model = BaseModel()
-        model.created_at = datetime(2026, 1, 2, 3, 4, 5, 123456)
-        model.updated_at = datetime(2026, 1, 2, 6, 7, 8, 654321)
-        model_dict = model.to_dict()
-        self.assertEqual(
-            model_dict["created_at"], "2026-01-02T03:04:05.123456")
-        self.assertEqual(
-            model_dict["updated_at"], "2026-01-02T06:07:08.654321")
-
-    def test_to_dict_does_not_change_instance(self):
-        """Dictionary conversion leaves the instance attributes intact."""
-        model = BaseModel()
-        original_attributes = model.__dict__.copy()
-        model.to_dict()
-        self.assertEqual(model.__dict__, original_attributes)
-        self.assertIsInstance(model.created_at, datetime)
-        self.assertIsInstance(model.updated_at, datetime)
+    def test_dictionary_does_not_mutate_model(self):
+        """Serialization leaves the model's timestamps and dict intact."""
+        model = self.model_class()
+        original = model.__dict__.copy()
+        data = model.to_dict()
+        data["id"] = "different"
+        self.assertEqual(model.__dict__, original)
         self.assertNotIn("__class__", model.__dict__)
 
-    def test_to_dict_returns_a_separate_dictionary(self):
-        """Changing a returned dictionary does not replace model values."""
-        model = BaseModel()
-        model.name = "Original name"
-        model_dict = model.to_dict()
-        model_dict["name"] = "Changed name"
-        self.assertIsNot(model_dict, model.__dict__)
-        self.assertEqual(model.name, "Original name")
+    def test_dictionary_reconstruction(self):
+        """Keyword data restores identity, custom fields, and datetimes."""
+        model = self.model_class()
+        model.custom_text = "Restored value"
+        restored = self.model_class(**model.to_dict())
+        self.assertIsNot(restored, model)
+        self.assertEqual(restored.__dict__, model.__dict__)
+        self.assertNotIn("__class__", restored.__dict__)
 
-    def test_create_from_dictionary(self):
-        """Restoring a dictionary preserves all original model attributes."""
-        model = BaseModel()
-        model.name = "My First Model"
-        model.my_number = 89
-        restored_model = BaseModel(**model.to_dict())
-        self.assertIsNot(restored_model, model)
-        self.assertEqual(restored_model.__dict__, model.__dict__)
-        self.assertEqual(restored_model.to_dict(), model.to_dict())
+    def test_reconstruction_does_not_register(self):
+        """Dictionary construction does not register a new object."""
+        data = self.model_class().to_dict()
+        storage.all().clear()
+        with patch.object(storage, "new") as new:
+            self.model_class(**data)
+        new.assert_not_called()
+        self.assertEqual(storage.all(), {})
 
-    def test_dictionary_class_name_is_ignored(self):
-        """Serialized class metadata is not added as an instance attribute."""
-        model_dict = BaseModel().to_dict()
-        model_dict["__class__"] = "AnotherClass"
-        restored_model = BaseModel(**model_dict)
-        self.assertNotIn("__class__", restored_model.__dict__)
-        self.assertEqual(restored_model.to_dict()["__class__"], "BaseModel")
+    def test_save(self):
+        """Saving advances updated_at, preserves created_at, and writes."""
+        model = self.model_class()
+        created = model.created_at
+        later = model.updated_at + timedelta(seconds=1)
+        with patch("models.base_model.datetime") as clock:
+            clock.now.return_value = later
+            model.save()
+        self.assertEqual(model.updated_at, later)
+        self.assertEqual(model.created_at, created)
+        data = json.loads(self.path.read_text())
+        key = "{}.{}".format(self.model_class.__name__, model.id)
+        self.assertEqual(data[key], model.to_dict())
 
-    def test_dictionary_timestamps_become_datetimes(self):
-        """ISO strings are restored as datetime objects with microseconds."""
-        model_dict = {
-            "id": "saved-id",
-            "created_at": "2026-01-02T03:04:05.123456",
-            "updated_at": "2026-01-02T06:07:08.654321",
-        }
-        model = BaseModel(**model_dict)
-        self.assertEqual(model.id, "saved-id")
-        self.assertEqual(
-            model.created_at, datetime(2026, 1, 2, 3, 4, 5, 123456))
-        self.assertEqual(
-            model.updated_at, datetime(2026, 1, 2, 6, 7, 8, 654321))
-        self.assertEqual(
-            model.to_dict()["created_at"], model_dict["created_at"])
+    def test_defaults_and_inheritance(self):
+        """Derived models inherit BaseModel and declare typed defaults."""
+        model = self.model_class()
+        self.assertIsInstance(model, BaseModel)
+        for name, expected in self.defaults.items():
+            self.assertEqual(getattr(self.model_class, name), expected)
+            self.assertEqual(getattr(model, name), expected)
+            self.assertIs(type(getattr(model, name)), type(expected))
 
-    def test_dictionary_timestamps_without_microseconds(self):
-        """ISO strings with zero microseconds can also be restored."""
-        model = BaseModel(
-            created_at="2026-01-02T03:04:05",
-            updated_at="2026-01-02T06:07:08")
-        self.assertEqual(model.created_at, datetime(2026, 1, 2, 3, 4, 5))
-        self.assertEqual(model.updated_at, datetime(2026, 1, 2, 6, 7, 8))
-
-    def test_empty_dictionary_creates_new_model(self):
-        """An empty dictionary follows normal new-instance initialization."""
-        model = BaseModel(**{})
-        self.assertEqual(uuid.UUID(model.id).version, 4)
-        self.assertIsInstance(model.created_at, datetime)
-        self.assertIsInstance(model.updated_at, datetime)
-
-    def test_positional_arguments_are_ignored(self):
-        """Positional arguments do not affect new or restored models."""
-        model = BaseModel("ignored", 89)
-        self.assertEqual(uuid.UUID(model.id).version, 4)
-        model_dict = model.to_dict()
-        restored_model = BaseModel("ignored", 89, **model_dict)
-        self.assertEqual(restored_model.__dict__, model.__dict__)
-        self.assertEqual(model_dict, model.to_dict())
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_keyword_attributes(self):
+        """Keyword reconstruction preserves overridden model fields."""
+        data = self.model_class().to_dict()
+        for name, default in self.defaults.items():
+            if isinstance(default, str):
+                data[name] = "custom"
+            elif isinstance(default, list):
+                data[name] = ["amenity-id"]
+            elif isinstance(default, int):
+                data[name] = 3
+            else:
+                data[name] = 1.5
+        restored = self.model_class(**data)
+        self.assertEqual(restored.to_dict(), data)
